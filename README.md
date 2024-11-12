@@ -1,3 +1,11 @@
-# BMIN503/EPID600 Final Project
+# BMIN503 Final Project: Predicting ICU length of stay among patients with alcohol-associated liver disease
+
+Overview
 
 This project aims to predict the ICU length of stay for patients with alcohol-associated liver disease by applying and comparing several supervised machine learning algorithms: linear regression models, random forest, and extreme gradient boosting. This study will use the Medical Information for Intensive Care (MIMIC) -IV database. I met with Dr. Serper, who contributed domain expertise from her clinical experience as a gastroenterologist, and consulted Dr. Min regarding analytic approaches. 
+
+Introduction
+
+The incidence of alcohol-associated liver disease (ALD) has risen globally in recent years, especially following the intensification of psychosocial stressors during the COVID-19 pandemic. Decompensated ALD is characterized by complications, such as encephalopathy, gastrointestinal bleeding, hepatopulmonary or hepatorenal syndrome, often requiring critical care. This generates additional areas of concern, because the length of stay in the ICU is associated with healthcare expenses and resource allocation. According to a cost analysis based on ICU service costs relative to length of stay, losses are incurred in the first three days due to intensive use of diagnostic and medical resources, with profitability beginning on day four. Predicting whether a patient's ICU stay will exceed three days could help tailor care plans for patients and and optimize resource allocation, so that unnecessary interventions are reduced and resources are increased as needed based on the critical care needs of the patient.
+
+In recognition of the importance of predicting ICU length of stay, several machine learning prediction models have been developed for this purpose. However, these previous models do not account for distinct disease traits or trajectories specific to the ALD patient population and fail to consider patient demographics, vital signs, and lab values concurrently, omitting the comprehensive range of factors that could project ICU length of stay from the outset. By integrating insights from critical care with techniques from biomedical informatics, this study aims to build machine learning models that predict ICU length of stay in relation to the three-day threshold for patients with ALD. It will utilize demographic and clinical features of the patients as predictors and evaluate the potential usefulness of the models based on their predictive accuracy.

@@ -1,10 +1,10 @@
 # BMIN503 Final Project: Predicting ICU length of stay among patients with alcohol-associated liver disease
 
-Overview
+*Overview*
 
 This project aims to predict the ICU length of stay for patients with alcohol-associated liver disease by applying and comparing several supervised machine learning algorithms: linear regression models, random forest, and extreme gradient boosting. This study will use the Medical Information for Intensive Care (MIMIC) -IV database. I met with Dr. Serper, who contributed domain expertise from her clinical experience as a gastroenterologist, and consulted Dr. Min regarding analytic approaches. 
 
-Introduction
+*Introduction*
 
 The incidence of alcohol-associated liver disease (ALD) has risen globally in recent years, especially following the intensification of psychosocial stressors during the COVID-19 pandemic. Decompensated ALD is characterized by complications, such as encephalopathy, gastrointestinal bleeding, hepatopulmonary or hepatorenal syndrome, often requiring critical care. This generates additional areas of concern, because the length of stay in the ICU is associated with healthcare expenses and resource allocation. According to a cost analysis based on ICU service costs relative to length of stay, losses are incurred in the first three days due to intensive use of diagnostic and medical resources, with profitability beginning on day four. Predicting whether a patient's ICU stay will exceed three days could help tailor care plans for patients and and optimize resource allocation, so that unnecessary interventions are reduced and resources are increased as needed based on the critical care needs of the patient.
 

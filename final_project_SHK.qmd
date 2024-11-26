@@ -824,7 +824,7 @@ scatter_cont <- (losNage | losNEDlos ) /
 print(scatter_cont)
 ```
 
-3.  Machine learning I : Logistic regression
+3.  **Machine learning I : Logistic regression**
 
 ```{r}
 ## 10-fold Cross-Validation
@@ -840,7 +840,7 @@ autoplot(roc_curve(icu.4days_lr_pred_test, truth, `.pred_≧ 4days in ICU`))
 metrics(icu.4days_lr_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
 ```
 
-4.  Machine learning II : Random Forest
+4.  **Machine learning II : Random Forest**
 
 ```{r}
 ## 10-fold Cross-Validation
@@ -856,7 +856,7 @@ autoplot(roc_curve(icu.4days_rf_pred_test, truth, `.pred_≧ 4days in ICU`))
 metrics(icu.4days_rf_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
 ```
 
-5.  Machine learning III : XGBoost
+5.  **Machine learning III : XGBoost**
 
 ```{r}
 ## 10-fold Cross-Validation

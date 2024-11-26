@@ -1,0 +1,879 @@
+---
+title: "Predicting ICU length of stay among patients with alcohol-associated liver disease"
+subtitle: "BMIN503/EPID600 Final Project"
+author: "Sue Hyon Kim"
+format: html
+editor: visual
+number-sections: true
+embed-resources: true
+---
+
+------------------------------------------------------------------------
+
+Use this template to complete your project throughout the course. Your Final Project presentation will be based on the contents of this document. Replace the title/name above and text below with your own, but keep the headers. Feel free to change the theme and other display settings, although this is not required.
+
+## Overview {#sec-overview}
+
+This project aims to predict the ICU length of stay for patients with alcohol-associated liver disease by applying and comparing several supervised machine learning algorithms: linear regression models, random forest, and extreme gradient boosting. This study will use the Medical Information for Intensive Care (MIMIC) -IV database. I met with Dr. Serper, who contributed domain expertise from her clinical experience as a gastroenterologist, and consulted Dr. Min regarding analytic and machine learning approaches. <https://github.com/kshyon/BMIN503_Final_Project_SHK>
+
+## Introduction {#sec-introduction}
+
+The incidence of alcohol-associated liver disease (ALD) has risen globally in recent years, especially following the intensification of psychosocial stressors during the COVID-19 pandemic. Decompensated ALD is characterized by complications, such as encephalopathy, gastrointestinal bleeding, hepatopulmonary or hepatorenal syndrome, often requiring critical care.
+
+Receiving care in the ICU generates areas of concern, because the length of stay in the ICU is associated with patient prognosis, caregiver communication, and healthcare expenses. Prolonged ICU stays have been linked to unfavorable patient outcomes, such as in-hospital mortality and ICU readmissions. Caregivers of ICU patients are also anxious to know the projected length of stay in critical care, as they have to plan for work and other commitments. Moreover, the patient's ICU length of stay is associated with healthcare expenses and resource allocation, with losses incurring in the first three days due to intensive use of diagnostic and medical resources, and profitability beginning on day four. Predicting whether a patient's ICU stay will exceed four days could help tailor care plans, alleviate caregiver uncertainty, and optimize resource allocation by reducing unnecessary interventions and appropriately allocated resources based on the patient's critical care needs.
+
+In recognition of the importance of predicting ICU length of stay, several machine learning prediction models have been developed for this purpose. However, these previous models omit the comprehensive range of factors that could project ICU length of stay from the outset, as they do not account for distinct disease traits or trajectories specific to the ALD patient population and fail to consider patient demographics, vital signs, and lab values concurrently. By integrating insights from critical care with techniques from biomedical informatics, this study aims to build machine learning models that predict ICU length of stay in relation to the four-day threshold for patients with ALD. It will consider both demographic and clinical features of the patients as predictors and the potential usefulness of the models will be evaluated based on their predictive accuracy.
+
+## Methods {#sec-methods}
+
+The Medical Information Mart for Intensive Care (MIMIC)-IV database was used for this study. Demographic and clinical features were utilized as predictors of ICU length of stay (≧4days, \<4days) across three machine learning approaches: logistic regression, random forest, and XGBoost. Initial vital signs and lab results taken after ICU admission were included, as data from the first hours reflect the acute phase of a patient's condition and serve as early indicators of their health status. The top significant variables were also extracted to gain insights into patient subgroups for subsequent unsupervised machine learning analyses.
+
+```{r}
+#| warning: false
+library(readr) 
+library(dplyr)
+library(janitor)
+library(data.table)
+library(stringr)
+library(missForest)
+library(table1)
+library(ggplot2)
+library(randomForest)
+library(glmnet)
+library(xgboost)
+library(vip)
+library(tidymodels)
+library(broom)
+```
+
+1.  **Preparing the data**
+
+Importing data and joining tables to create the dataset with variables relevant to my project.
+
+```{r}
+#| warning: false
+# Import the CSV file
+patients<-read_csv("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/patients.csv")
+diagnoses_icd<-read_csv("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/diagnoses_icd.csv")
+icu<-read_csv("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/icustays.csv")
+demographics <- read_csv("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/admissions.csv") 
+```
+
+```{r}
+#join tables to screen for LT-A, predict ICU readmission / length of stay 
+pt_diagnosis<-left_join(patients, diagnoses_icd, by=c("subject_id"))
+
+#filter for ALD patients
+patients_ald<-pt_diagnosis|>
+  filter((icd_code%in% c("5710","5711","5712")& icd_version=="9")|(icd_code%in% c("K700", "K7010", "K7011", "K702", "K7030", "K7031", "K7040", "K7041", "K709")&icd_version=="10"))
+
+# However, some patients have multiple documentation of ALD or LT status using more than one ICD codes, so now we need a cleaned list of participants
+## Patients with ALD (N = 4727) 
+patients_ald<-patients_ald|>
+  group_by(subject_id)|>
+  dplyr::slice(1)|>
+  ungroup()
+
+# are there any ALD patient who had LT?  
+patient_allLT <- unique(diagnoses_icd$subject_id[(diagnoses_icd$icd_code == "V427" & diagnoses_icd$icd_version == "9")|(diagnoses_icd$icd_code=="Z944" & diagnoses_icd$icd_version=="10")])
+patient_LT_alc <- patients_ald |>
+  filter(subject_id %in% patient_allLT) 
+## n=203 
+## they will be excluded because their ICU visits are typlically related to post-transplant care, sepsis, or other factors not comparable to those of patients with ALD.  
+
+# Patients with ALD who have not undergone LT (N=4524)
+patients_ald_nonLT<-patients_ald|>
+  filter((!subject_id %in% patient_LT_alc$subject_id))|>
+  select(-hadm_id, -seq_num, -icd_code, -icd_version) 
+
+# ALD(non-LT) patients' ICU admission events (N=4865 ICU admissions)
+## Some ALD patients who have not received LT have multiple ICU stays. 
+aldNonLT_icu<-left_join(patients_ald_nonLT, icu, by="subject_id")|>
+  filter(!is.na(stay_id))
+## Each ICU admission event will be used as an independent data point to predict its IUC length of stay 
+
+# Join demographic characteristics to each ICU admission, create new variables, and remove unnecessary variables
+aldNonLT_icu<-left_join(aldNonLT_icu, demographics, by=c("subject_id", "hadm_id"))|>
+  mutate(year_birth=anchor_year-anchor_age)|>
+  mutate(age=as.numeric(format(intime, "%Y"))-year_birth)|>
+  mutate(EDlos=if_else(!is.na(edouttime)&!is.na(edregtime), as.numeric(difftime(edouttime,edregtime, units="mins")), 0))|>
+  mutate(EDvisit=factor(ifelse(!is.na(edregtime), 1, 0), levels=c(0,1), labels=c("No", "Yes")))|>
+  mutate(ICUdeath=factor(case_when(is.na(deathtime)~0, intime<deathtime & deathtime<outtime~1, TRUE~0), levels=c(0,1), labels=c("No","Yes")))|>
+  mutate(los_icu4=factor(ifelse(los>=4, 1, 0), levels=c(0,1), labels=c("< 4days in ICU","≧ 4days in ICU")))|>
+  select(-anchor_age, -anchor_year, -anchor_year_group, -admit_provider_id, -discharge_location, -year_birth, -edregtime, -edouttime, -dod, -deathtime)
+```
+
+Joining the initial V/S and lab values from each ICU stay is next, BUT...
+
+The csv containing V/S and lab values were too large to load directly into R (39GB). I had to extract relevant items (v/s and labs) for my population of interest (ALD patients) from the original csv file in chunks, and then save the final output as a new csv file to skip this stressful process moving forward.
+
+```{r}
+#| eval: FALSE
+## Retain itemid for relevant V/S and labs
+### Hgb (220228), Platelet count (227457), INR (227467), PTT (227466), Total Bilirubin (225690), Direct Bilirubin (225651), ALT (220644), AST (220587), Alb (227456), Ammonia (220580), BUN (225624), Cr (220615), Sodium-serum (220645), Sodium-whole blood (226534), Potasium-serum (227442) Potassium-whole blood (227464), Cortisol (227463) Lactate (225668), WBC count (220546), Glucose-finger stick (225664), Glucose-serum (220621), Glucose-whole blood (226537), CRP (227444), pO2_abga (220224), pCO2_abga (220235), HCO3-serum (227443), iCa (225667)
+### NIBPm (220181) ABPm (220052) HR(220045) RR(220210) SpO2(220277)
+relevant_itemids <- c(220228, 227457, 227467,227466,225690,225651,220644,220587,227456,220580,225624,220615,220645,226534,227442,227464,227463,225668,220546,225664,220621,226537,227444,220224,220235,227443,225667,220181, 220052, 220045, 220210, 220277)
+library(data.table)
+file.exists("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/chartevents.csv/chartevents.csv")
+
+con <- file("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/chartevents.csv/chartevents.csv", "r")
+chunk_size<-10000
+cols_to_read <- c("subject_id", "hadm_id", "stay_id", "charttime", "itemid", "value", "valuenum", "valueuom")
+header <- readLines(con, n = 1)
+chunk_lines <- readLines(con, n = chunk_size)
+filtered_chunks<-list()
+
+while (length(chunk_lines) > 0) {
+  temp_file <- tempfile()
+  writeLines(c(header, chunk_lines), temp_file)  
+  chunk <- fread(temp_file, select = cols_to_read) 
+  filtered_chunk<-chunk[itemid %in% relevant_itemids] 
+  filtered_chunks <- append(filtered_chunks, list(filtered_chunk)) 
+  chunk_lines <- readLines(con, n = chunk_size)  
+}
+
+close(con)
+vitalNlabs<-rbindlist(filtered_chunks)
+
+vitalNlabs_ald<-vitalNlabs|>
+  filter(subject_id%in%ALD_list$subject_id)
+
+write.csv(vitalNlabs_ald, "C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/vitalNlabs_ald.csv", row.names = FALSE)
+```
+
+Now, back to joining initial V/S and lab values from the ICU stay
+
+```{r}
+file.exists("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/vitalNlabs_ald.csv")
+```
+
+```{r}
+#| warning: false
+vitalNlabs_ald<-read_csv("C:/Users/sue94/Documents/대학원/_PhD 박사과정/3학기/MIMIC/vitalNlabs_ald.csv")
+```
+
+```{r}
+# Change the itemid into the actual v/s and lab type 
+vitalNlabs_ald<-vitalNlabs_ald|>
+  mutate(itemid=as.character(itemid))|>
+  mutate(itemid=recode(itemid, "220228"="Hgb", "227457"="PLT", "227467"="INR", "227466"="PTT", "225690"="TBil", "225651"="DirectBil", "220644"="ALT", "220587"="AST", "227456"="Alb", "220580"="Ammonia", "225624"="BUN", "220615"="Cr", "220645"="Na_serum", "226534"="Na_blood", "227442"="K_serum", "227464"="K_blood", "227463"="Cortisol", "225668"="Lactate", "220546"="WBC", "225664"="Glucose_poct", "220621"="Glucose_serum", "226537"="Glucose_blood", "227444"="CRP", "220224"="pO2_abga", "220235"="pCO2_abga", "227443"="HCO3_serum", "225667"="iCa", "220181"="NIBPm", "220052"="ABPm", "220045"="HR", "220210"="RR", "220277"="SpO2"))
+
+# Keep only the initial v/s and lab values after ICU admission and remove unnecessary variables
+## just making sure that these two columns are duplicates before removing one of them :)
+all(vitalNlabs_ald$value == vitalNlabs_ald$valuenum)  
+
+vitalNlabs_ald_initial<-vitalNlabs_ald|>
+  group_by(stay_id, itemid)|>
+  filter(charttime==min(charttime))|>
+  ungroup()|>
+  select(-charttime, -valuenum)
+
+# This is in a long format, which complicates the left-joining process. We will convert this into a wide data frame
+wide_vitalNlabs_ald_initial <-vitalNlabs_ald_initial|>
+  tidyr::pivot_wider(names_from=itemid, values_from = c(value, valueuom))
+
+# Finally joining the V/S and lab values for each ICU stay
+aldNonLT_icu<-left_join(aldNonLT_icu, wide_vitalNlabs_ald_initial, by=c("subject_id", "hadm_id","stay_id"))
+
+# Now, I have my data set of non-LT ALD patients who have been admitted to ICUs, with their demographics, each of their unique ICU stays, and initial vitalsNlabs from each unique ICU stay
+head(aldNonLT_icu)
+```
+
+2.  **Exploring the data**
+
+Visualizing the distribution of each variable to identify outliers that need to be addressed
+
+```{r}
+# ICU los
+boxplot(aldNonLT_icu$los) 
+## who are those with over 40 days of ICU los?
+aldNonLT_icu|>
+  filter(los>40)|> #n=20
+  select(subject_id, hadm_id, stay_id, los)
+## in order to improve model accuracy while preserving data integrity, we will impute the outliers with extreme values with a more reasonable value (95th percentile)
+upper_95th_los <- quantile(aldNonLT_icu$los, 0.95, na.rm = TRUE) # los=14.8
+aldNonLT_icu$los[aldNonLT_icu$los > upper_95th_los] <- upper_95th_los
+hist(aldNonLT_icu$los) # Easier to see the distribution of ICU length of stays in one histogram
+
+# Age
+boxplot(aldNonLT_icu$age) 
+## FYI, MIMIC groups all patients over 89 with value 91, regardless of their real age, for de-identification purposes
+aldNonLT_icu|>
+  filter(age<18) #n=0
+hist(aldNonLT_icu$age)
+
+# ED los
+boxplot(aldNonLT_icu$EDlos, na.rm=TRUE) 
+## who are those with over 24hrs of ED length of stay?
+aldNonLT_icu|>
+  filter(EDlos>1440, na.rm=TRUE)|> #n=78
+  select(subject_id, hadm_id, stay_id, EDlos)
+## in order to improve model accuracy while preserving data integrity, we will impute the outliers with extreme values with a more reasonable value (95th percentile)
+upper_95th_EDlos <- quantile(aldNonLT_icu$EDlos, 0.95, na.rm = TRUE) # EDlos= 863 minutes
+aldNonLT_icu$EDlos[aldNonLT_icu$EDlos > upper_95th_EDlos] <- upper_95th_EDlos
+hist(aldNonLT_icu$EDlos) # Easier to see the distribution of ED length of stays in one histogram
+
+# V/S: RR
+boxplot(aldNonLT_icu$value_RR, na.rm=TRUE) 
+## who are those with over 35 breaths/min or under 8 breaths/min?
+aldNonLT_icu|>
+  filter(value_RR>35)|> #n=105
+  select(subject_id, hadm_id, stay_id, value_RR)
+aldNonLT_icu|>
+  filter(value_RR<8)|> #n=24
+  select(subject_id, hadm_id, stay_id, value_RR)
+## in order to improve model accuracy while preserving data integrity, we will impute the outliers with extreme values with a more reasonable value (accurate value or 5th/95th percentile)
+upper_95th_RR <- quantile(aldNonLT_icu$value_RR, 0.95, na.rm = TRUE) # value_RR= 31 breaths/min
+lower_5th_RR <- quantile(aldNonLT_icu$value_RR, 0.05, na.rm = TRUE) # value_RR= 12 breaths/min
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_RR= ifelse(value_RR > upper_95th_RR, upper_95th_RR, value_RR))|>
+  mutate(value_RR= ifelse(value_RR < lower_5th_RR, lower_5th_RR, value_RR)) 
+hist(aldNonLT_icu$value_RR) # Easier to see the distribution of RR in one histogram  
+
+# V/S: HR
+boxplot(aldNonLT_icu$value_HR, na.rm=TRUE) 
+## who are those with HR > 140 bpm or HR <40 bpm?
+aldNonLT_icu|>
+  filter(value_HR>140)|> #n=92
+  select(subject_id, hadm_id, stay_id, value_HR) #10219906 has a HR of 8400 ... when referring to his other V/S, this seems to be a typo for 84 
+aldNonLT_icu|>
+  filter(value_HR<40)|> #n=6
+  select(subject_id, hadm_id, stay_id, value_HR) #10809832 has a HR of 0 that was reassessed 32 minutes later at 76 bpm #14858739 has a HR of 0 that was reassessed 10 minutes later at 66 bpm #the remaining subject_id+stay_id values appear correct
+## in order to improve model accuracy while preserving data integrity, we will impute the outliers with extreme values with a more reasonable value (accurate value or 5th/95th percentile)
+upper_95th_HR <- quantile(aldNonLT_icu$value_HR, 0.95, na.rm = TRUE) # value_HR= 129 bpm ... but HR can rise to 140 bpm on exertion, anxiety, or cardiac dysrhythmias such as Afib
+upper_99th_HR <- quantile(aldNonLT_icu$value_HR, 0.99, na.rm = TRUE) # value_HR= 145 bpm... the upper 99th percentile HR will be used as the threshold for imputation to allow for variability from normal compensatory tachycardia
+lower_5th_HR <- quantile(aldNonLT_icu$value_HR, 0.05, na.rm=TRUE) # value_HR= 64 bpm ... but a normal HR value ranges from 60-100 bpm
+lower_1th_HR <- quantile(aldNonLT_icu$value_HR, 0.01, na.rm=TRUE) # value_HR= 55 bpm ... the lower 1st percentile HR will be used to accommodate normal physiological variations among individuals without flagging too many false alerts
+aldNonLT_icu <- aldNonLT_icu %>%
+  mutate(value_HR = ifelse(value_HR == 8400 & subject_id==10219906 & hadm_id == 26993822 & stay_id==33677583, 84, value_HR))|>
+  mutate(value_HR = ifelse(value_HR == 0 & subject_id==10809832 & hadm_id == 20695882 & stay_id==39219739, 76, value_HR))|>  
+  mutate(value_HR = ifelse(value_HR == 0 & subject_id==14858739 & hadm_id == 22332316 & stay_id==37414501, 66, value_HR))|>
+  mutate(value_HR = ifelse(value_HR > upper_99th_HR, upper_99th_HR, value_HR))|>
+  mutate(value_HR = ifelse(value_HR < lower_1th_HR, lower_1th_HR, value_HR))
+hist(aldNonLT_icu$value_HR) # Easier to see the distribution of HR in one histogram  
+
+# V/S: SpO2
+boxplot(aldNonLT_icu$value_SpO2, na.rm=TRUE) 
+## who are those with SpO2 > 100% or SpO2 <80%?
+aldNonLT_icu|>
+  filter(value_SpO2>100)|> #n=1
+  select(subject_id, hadm_id, stay_id, value_SpO2) #18353640 has a SpO2 of 963% ... when referring to abga results, this seems to be a typo for 96%
+aldNonLT_icu|>
+  filter(value_SpO2<80)|> #n=20
+  select(subject_id, hadm_id, stay_id, value_SpO2) #14086229 has a SpO2 of 0% ... when referring to other v/s and ICU prognosis (death at ICU on the day after admission) it seems like it would have been low 
+## in order to improve model accuracy while preserving data integrity, we will impute the outliers with extreme values with a more reasonable value (accurate value or 5th/95th percentile)
+lower_5th_SpO2 <- quantile(aldNonLT_icu$value_SpO2, 0.05, na.rm = TRUE) # value_SpO2= 91% ... however, imputing using this measure would not be able to distinguish between mild and severe hypoxemia, as shown in the oxygen-hemoglobin dissociation curve 
+lower_1th_SpO2 <- quantile(aldNonLT_icu$value_SpO2, 0.01, na.rm = TRUE) # value_SpO2= 84% ... this better accounts for the nonlinear relationship between oxygen saturation and PaO2
+aldNonLT_icu <- aldNonLT_icu %>%
+  mutate(value_SpO2 = ifelse(value_SpO2 == 963 & subject_id==18353640  & hadm_id == 21455850  & stay_id==35801109, 96, value_SpO2))|>
+  mutate(value_SpO2 = ifelse(value_SpO2<lower_1th_SpO2, lower_1th_SpO2, value_SpO2))
+hist(aldNonLT_icu$value_SpO2) # Easier to see the distribution of SpO2 in one histogram  
+
+# V/S: NIBPm
+range(aldNonLT_icu$value_NIBPm, na.rm = TRUE)
+boxplot(aldNonLT_icu$value_NIBPm, na.rm=TRUE) 
+## who are those with NIBPm > 140 mmHg or NIBPm < 30 mmHg?
+aldNonLT_icu|>
+  filter(value_NIBPm>140)|> #n=28
+  select(subject_id, hadm_id, stay_id, value_NIBPm) #19063358 has a NIBPm=6116 which was measured 15 minutes later at 69 mmHg
+aldNonLT_icu|>
+  filter(value_NIBPm<30)|> #n=5
+  select(subject_id, hadm_id, stay_id, value_NIBPm) #11067215 had a NIBPm=22 which was measured 14 seconds later at 58mmHg #15484715 had a NIBPm=29 which was measured 5 minutes later at 76mmHg #15930458 had a NIBPm=8 which was measured 9 minutes later at 93mmHg #the remaining subject_id+stay_id values appear correct 
+## in order to improve model accuracy while preserving data integrity, we will impute the outliers with extreme values with a more reasonable value (accurate value or 5th/95th percentile)
+upper_95th_NIBPm <- quantile(aldNonLT_icu$value_NIBPm, 0.95, na.rm = TRUE) # value_NIBPm= 116mmHg
+lower_5th_NIBPm <- quantile(aldNonLT_icu$value_NIBPm, 0.05, na.rm = TRUE) # value_NIBPm= 57 mmHg ... however, this would flag almost all hypotensive states and reduce variability in the sample
+lower_1th_NIBPm <- quantile(aldNonLT_icu$value_NIBPm, 0.01, na.rm = TRUE) # value_NIBPm= 47 mmHg ... this better accounts for a broader range of hypotension
+aldNonLT_icu <- aldNonLT_icu %>%
+  mutate(value_NIBPm = ifelse(value_NIBPm == 6116 & subject_id==19063358 & hadm_id == 20804902 & stay_id==32987841, 69, value_NIBPm))|>
+  mutate(value_NIBPm = ifelse(value_NIBPm == 22 & subject_id==11067215 & hadm_id == 23574374 & stay_id==37864255, 58, value_NIBPm))|>
+  mutate(value_NIBPm = ifelse(value_NIBPm == 29 & subject_id==15484715 & hadm_id == 23346013 & stay_id==37009681, 76, value_NIBPm))|>
+  mutate(value_NIBPm = ifelse(value_NIBPm == 8 & subject_id==15930458 & hadm_id == 24792632 & stay_id==31245016, 93, value_NIBPm))|>
+  mutate(value_NIBPm= ifelse(value_NIBPm > upper_95th_NIBPm, upper_95th_NIBPm, value_NIBPm))|>
+  mutate(value_NIBPm= ifelse(value_NIBPm < lower_1th_NIBPm, lower_1th_NIBPm, value_NIBPm)) 
+hist(aldNonLT_icu$value_NIBPm) # Easier to see the distribution of AA in one histogram  
+
+# V/S: ABPm
+boxplot(aldNonLT_icu$value_ABPm, na.rm=TRUE) 
+## who are those with ABPm > 140mmHg or ABPm < 30mmHg?
+aldNonLT_icu|>
+  filter(value_ABPm>140)|> #n=XXX
+  select(subject_id, hadm_id, stay_id, value_ABPm) # These will be recoded NAs and imputed with NIBPm values 
+aldNonLT_icu|>
+  filter(value_ABPm<30)|> #n=160
+  select(subject_id, hadm_id, stay_id, value_ABPm) # These will be recoded NAs and imputed with NIBPm values 
+## in order to improve model accuracy while preserving data integrity, abnormal values will be recoded as NA for subsequent imputation using NIBPm Data points without ABPm values will be imputed using NIBPm values instead
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_ABPm=ifelse(value_ABPm>140|value_ABPm<30, NA, value_ABPm))
+hist(aldNonLT_icu$value_ABPm) # Easier to see the distribution of AA in one histogram  
+
+# Labs: Hgb (g/dl)
+range(aldNonLT_icu$value_Hgb, na.rm=TRUE) # all within realistic range
+hist(aldNonLT_icu$value_Hgb) 
+
+# Labs: WBC (K/uL)
+range(aldNonLT_icu$value_WBC, na.rm=TRUE)
+hist(aldNonLT_icu$value_WBC) # some values are hard to believe
+boxplot(aldNonLT_icu$value_WBC, na.rm=TRUE) 
+## who is that outlier?
+aldNonLT_icu|>
+  filter(value_WBC>100)|> #n=1
+  select(subject_id, hadm_id, stay_id, value_WBC) #15433848 WBC count is 249K/uL, meaning 249,000cells/μL, which seems abnormally high. 
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_WBC <- quantile(aldNonLT_icu$value_WBC, 0.95, na.rm = TRUE) # value_WBC= 26.4 K/uL ... but a leukmoid reaction is diagnosed at WBC >50 K/uL, so we'll use this clinically meaningful cutoff score instead
+upper_WBC <- 50
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_WBC= ifelse(value_WBC>upper_WBC, upper_WBC, value_WBC))
+hist(aldNonLT_icu$value_WBC) # Easier to see the distribution of value_WBC in one histogram  
+
+# Labs: PLT (K/uL)
+range(aldNonLT_icu$value_PLT, na.rm=TRUE)
+hist(aldNonLT_icu$value_PLT) # some values are hard to believe
+boxplot(aldNonLT_icu$value_PLT, na.rm=TRUE) 
+## who are those outliers?
+aldNonLT_icu|>
+  filter(value_PLT>450)|> #n=80
+  select(subject_id, hadm_id, stay_id, value_PLT)
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_PLT <- quantile(aldNonLT_icu$value_PLT, 0.95, na.rm = TRUE) # value_PLT 325 K/uL ... but a normal platelet value can range to 450 K/uL, so we'll use the clinically meaningful cutoff
+upper_PLT <- 450 # value_PLT= 450,000/µL
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_PLT= ifelse(value_PLT>upper_PLT, upper_PLT, value_PLT))
+hist(aldNonLT_icu$value_PLT) # Easier to see the distribution of PLT in one histogram  
+
+# Labs: PTT (sec)
+range(aldNonLT_icu$value_PTT, na.rm=TRUE) # all within or near realistic range (25~100)
+boxplot(aldNonLT_icu$value_PTT, na.rm=TRUE) 
+hist(aldNonLT_icu$value_PTT) # Easier to see the distribution of PTT in one histogram 
+
+# Labs: INR
+range(aldNonLT_icu$value_INR, na.rm=TRUE) # value 999999 seems to indicate NAs that will have to be recoded and imputed
+boxplot(aldNonLT_icu$value_INR, na.rm=TRUE) 
+## who are those with INR > 5?
+aldNonLT_icu|>
+  filter(value_INR>5)|> #n= 60
+  select(subject_id, hadm_id, stay_id, value_INR)
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_INR <- quantile(aldNonLT_icu$value_INR, 0.95, na.rm = TRUE) # value_INR= 3.4 ... prolonged INRs are common among liver disease patients, but values exceeding 5 are typically considered clinically unacceptable
+upper_INR<-5
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_INR= ifelse(value_INR==999999.0, NA, value_INR))|>
+  mutate(value_INR= ifelse(value_INR>upper_INR, upper_INR, value_INR)) 
+hist(aldNonLT_icu$value_INR) # Easier to see the distribution of INR in one histogram   
+
+# Labs: Cr (mg/dL)
+range(aldNonLT_icu$value_Cr, na.rm=TRUE) 
+boxplot(aldNonLT_icu$value_Cr, na.rm=TRUE) 
+## who are those with Cr > 5?
+aldNonLT_icu|>
+  filter(value_Cr>5)|> #n= 212
+  select(subject_id, hadm_id, stay_id, value_Cr)
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_Cr <- quantile(aldNonLT_icu$value_Cr, 0.95, na.rm = TRUE) # value_Cr= 4.7 (AKI stageIII threshold is 4.0)
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_Cr= ifelse(value_Cr>upper_95th_Cr, upper_95th_Cr, value_Cr)) 
+hist(aldNonLT_icu$value_Cr) # Easier to see the distribution of Cr in one histogram
+
+# Labs: BUN (mg/dL)
+range(aldNonLT_icu$value_BUN, na.rm=TRUE) # value 999999 seems to indicate NAs that will have to be recoded and imputed
+boxplot(aldNonLT_icu$value_BUN, na.rm=TRUE) 
+## who are those with BUN > 75 mg/dL and BUN < 7mg/dL?
+aldNonLT_icu|>
+  filter(value_BUN>75)|> #n=309
+  select(subject_id, hadm_id, stay_id, value_BUN)
+aldNonLT_icu|>
+  filter(value_BUN<7)|> #n=401
+  select(subject_id, hadm_id, stay_id, value_BUN)
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_BUN <- quantile(aldNonLT_icu$value_BUN, 0.95, na.rm = TRUE) # value_BUN= 85mg/dL
+lower_5th_BUN <- quantile(aldNonLT_icu$value_BUN, 0.05, na.rm=TRUE) # value_BUN= 5mg/dL
+aldNonLT_icu<-aldNonLT_icu|> 
+  mutate(value_BUN= ifelse(value_BUN==999999.0, NA, value_BUN))|>
+  mutate(value_BUN= ifelse(value_BUN>upper_95th_BUN, upper_95th_BUN, value_BUN))|>
+  mutate(value_BUN= ifelse(value_BUN<lower_5th_BUN, lower_5th_BUN, value_BUN))
+hist(aldNonLT_icu$value_BUN) # Easier to see the distribution of BUN in one histogram  
+
+# Na (mEq/L)
+range(aldNonLT_icu$value_Na_serum, na.rm=TRUE) # all within or near realistic range (125~160)
+hist(aldNonLT_icu$value_Na_serum) # Easier to see the distribution of Na in one histogram  
+
+# Labs: K (mEq/L)
+range(aldNonLT_icu$value_K_serum, na.rm=TRUE) # all within or near realistic range (2~6)
+boxplot(aldNonLT_icu$value_K_serum, na.rm=TRUE) 
+## who are those with K > 7 mEq/L?
+aldNonLT_icu|>
+  filter(value_K_serum>7)|> #n= 41
+  select(subject_id, hadm_id, stay_id, value_K_serum) # 19186835 has a K level of 9mEq/L, but subsequent lab results show a decreasing trend that remains critically elevated, indicating accurate data
+hist(aldNonLT_icu$value_K_serum) # Easier to see the distribution of K in one histogram  
+
+# Labs: HCO3 (mEq/L)
+range(aldNonLT_icu$value_HCO3_serum, na.rm=TRUE)
+boxplot(aldNonLT_icu$value_HCO3_serum, na.rm=TRUE) 
+## who are those with HCO3 > 30 and HCO3 < 10?
+aldNonLT_icu|>
+  filter(value_HCO3_serum>30)|> #n= 128
+  select(subject_id, hadm_id, stay_id, value_HCO3_serum)
+aldNonLT_icu|>
+  filter(value_HCO3_serum<10)|> #n= 103
+  select(subject_id, hadm_id, stay_id, value_HCO3_serum)
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_HCO3 <- quantile(aldNonLT_icu$value_HCO3_serum, 0.95, na.rm = TRUE) # value_HCO3_serum= 29 mEq/L
+lower_5th_HCO3 <- quantile(aldNonLT_icu$value_HCO3_serum, 0.05, na.rm=TRUE) # value_HCO3_serum= 12 mEq/L
+aldNonLT_icu<-aldNonLT_icu|> 
+  mutate(value_HCO3_serum= ifelse(value_HCO3_serum>upper_95th_HCO3, upper_95th_HCO3, value_HCO3_serum))|>
+  mutate(value_HCO3_serum= ifelse(value_HCO3_serum<lower_5th_HCO3, lower_5th_BUN, value_HCO3_serum))
+hist(aldNonLT_icu$value_HCO3_serum) # Easier to see the distribution of HCO3 in one histogram  
+
+# Labs: Glucose_serum (mg/dL)
+range(aldNonLT_icu$value_Glucose_serum, na.rm=TRUE) # value 999999 seems to indicate NAs that will have to be recoded and imputed
+boxplot(aldNonLT_icu$value_Glucose_serum, na.rm=TRUE) 
+## who are those with BST > 400?
+aldNonLT_icu|>
+  filter(value_Glucose_serum>300)|> #n= 127
+  select(subject_id, hadm_id, stay_id, value_Glucose_serum)
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_Glucose <- quantile(aldNonLT_icu$value_Glucose_serum, 0.95, na.rm = TRUE) # value_Glucose_serum= 254
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_Glucose_serum= ifelse(value_Glucose_serum==999999.0, NA, value_Glucose_serum))|>
+  mutate(value_Glucose_serum= ifelse(value_Glucose_serum>upper_95th_Glucose, upper_95th_Glucose, value_Glucose_serum)) 
+hist(aldNonLT_icu$value_Glucose_serum) # Easier to see the distribution of INR in one histogram
+
+# Labs: AST (IU/L)
+range(aldNonLT_icu$value_AST, na.rm=TRUE)
+boxplot(aldNonLT_icu$value_AST, na.rm=TRUE) 
+## who are those with AST > 5000 U/L?
+aldNonLT_icu|>
+  filter(value_AST>5000)|> #n=33
+  select(subject_id, hadm_id, stay_id, value_AST) # when referring to their subsequent AST labs, these values appear accurate
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_AST <- quantile(aldNonLT_icu$value_AST, 0.95, na.rm = TRUE) # value_AST= 570 IU/L ... however, imputing these values would reduce the relevance of liver disease severity in our model
+upper_99th_AST <- quantile(aldNonLT_icu$value_AST, 0.99, na.rm = TRUE) # value_AST= 3531 IU/L ... the 99th percentile threshold will be used instead
+aldNonLT_icu<-aldNonLT_icu|> 
+  mutate(value_AST= ifelse(value_AST>upper_99th_AST, upper_99th_AST, value_AST))
+boxplot(aldNonLT_icu$value_AST, na.rm=TRUE) # Easier to see the distribution of AST in the boxplot rather than the histogram  
+
+# Labs: ALT (IU/L)
+range(aldNonLT_icu$value_ALT, na.rm=TRUE)
+boxplot(aldNonLT_icu$value_ALT, na.rm=TRUE) 
+## who are those with ALT > 1000 U/L?
+aldNonLT_icu|>
+  filter(value_ALT>1000)|> #n=61
+  select(subject_id, hadm_id, stay_id, value_ALT) # When referring to their subsequent ALT labs, these values appear accurate
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_ALT <- quantile(aldNonLT_icu$value_ALT, 0.95, na.rm = TRUE) # value_ALT= 258 IU/L ... however, imputing these values would reduce the relevance of liver disease severity in our model
+upper_99th_ALT <- quantile(aldNonLT_icu$value_ALT, 0.99, na.rm = TRUE) # value_ALT= 1387 IU/L ... the 99th percentile threshold will be used instead
+aldNonLT_icu<-aldNonLT_icu|> 
+  mutate(value_ALT= ifelse(value_ALT>upper_99th_ALT, upper_99th_ALT, value_ALT))
+boxplot(aldNonLT_icu$value_ALT, na.rm=TRUE) # Easier to see the distribution of ALT in one histogram
+
+# Labs: TBil (mg/dL)
+range(aldNonLT_icu$value_TBil, na.rm=TRUE) 
+boxplot(aldNonLT_icu$value_TBil, na.rm=TRUE) 
+## who are those with Total Bilirubin > 60?
+aldNonLT_icu|>
+  filter(value_TBil>60)|> #n=2
+  select(subject_id, hadm_id, stay_id, value_TBil) # When referring to their subsequent Total Bilirubin labs, these values appear accurate
+## in order to improve model accuracy while preserving data integrity, we will impute the outlier with a more reasonable value (5th/95th percentile or clinically meaningful threshold value)
+upper_95th_TBil <- quantile(aldNonLT_icu$value_TBil, 0.95, na.rm = TRUE) # value_TBil= 24.9 mg/dL ... however, imputing these values would reduce the relevance of liver disease severity in our model
+upper_99th_TBil <- quantile(aldNonLT_icu$value_TBil, 0.99, na.rm = TRUE) # value_TBil= 40.1 IU/L ... the 99th percentile threshold will be used instead
+aldNonLT_icu<-aldNonLT_icu|> 
+  mutate(value_TBil= ifelse(value_AST>upper_99th_TBil, upper_99th_TBil, value_TBil))
+boxplot(aldNonLT_icu$value_TBil, na.rm=TRUE) # Easier to see the distribution of TBil in one histogram  
+```
+
+Check for missing variables that may need to be dropped or imputed
+
+```{r}
+missing<-data.frame(Variable=colnames(aldNonLT_icu), NAs=colSums(is.na(aldNonLT_icu)), Percentage=colMeans(is.na(aldNonLT_icu))*100)
+print(missing)
+
+# missing less than 10% --- these will undergo imputation 
+missing_under10p<-missing|>
+  filter(Percentage<10)|>
+  filter(!startsWith(Variable,"valueuom"))
+missing_under10p
+
+# missing more than 10% 
+missing_over10p<-missing|>
+  filter(Percentage>10)|>
+  filter(!startsWith(Variable,"valueuom"))
+missing_over10p 
+## --- all will be dropped, except for ABPm, PTT, AST & ALT (sensitive indicators of liver-cell injury), and TBil which will be imputed after screening for outliers and inconsistent data
+## --- Na, K, and Glucose levels are present in the serum labs, LFTs can replace DirectBil and Alb
+## --- Unfortunately pO2 and pCO2 from abgas (maybe better to remove anyways, as they could be intubated and ambu-bagging as they enter the ICU), iCa, Lactate, Cortisol, Ammonia, CRP will have to be removed under the premise they are not routine labs taken for ALD patients in the ICU in this setting
+
+## Remove all variables with over 10% of missingness (keeping only ABPm, PTT, AST, ALT, and TBil) and Remove all non-relevant variables from the dataset
+aldNonLT_icu<-aldNonLT_icu|>
+  select(-value_Glucose_poct, -value_pO2_abga, -value_pCO2_abga, -value_iCa, -value_Lactate, -value_Alb, -value_Na_blood, -value_K_blood, -value_Glucose_blood, -value_DirectBil, -value_Cortisol, -value_Ammonia, -value_CRP)|>
+  select(-starts_with("valueuom"))
+```
+
+Reviewing, refining, and creating categorical variables
+
+```{r}
+tabyl(aldNonLT_icu$gender) 
+aldNonLT_icu$gender <- factor(aldNonLT_icu$gender, levels = c("F", "M"), labels = c("Female", "Male")) 
+
+tabyl(aldNonLT_icu$race) 
+aldNonLT_icu<-aldNonLT_icu|> ## new categories: White / Black / Hispanic.Latinx / Asian / Other / NA
+  mutate(race=case_when(str_starts(race, "WHITE")~"White", str_starts(race, "BLACK")~"Black", str_starts(race, "HISPANIC")~"Hispanic.Latinx", str_starts(race, "ASIAN")~"Asian", race %in% c("AMERICAN INDIAN/ALASKA NATIVE", "MULTIPLE RACE/ETHNICITY", "NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER", "PORTUGUESE", "SOUTH AMERICAN", "OTHER")~"Other", race %in% c("PATIENT DECLINED TO ANSWER", "UNABLE TO OBTAIN", "UNKNOWN")~NA_character_))|>
+  mutate(race=factor(race))
+
+tabyl(aldNonLT_icu$language) 
+aldNonLT_icu<-aldNonLT_icu|> ## new categories: English / nonEnglish
+  mutate(language = case_match(language, "English" ~ "English", .default = "nonEnglish", NA~NA_character_))|> 
+  mutate(language=factor(language))
+
+tabyl(aldNonLT_icu$marital_status) 
+aldNonLT_icu$marital_status <- factor(aldNonLT_icu$marital_status, levels=c("DIVORCED", "MARRIED", "SINGLE", "WIDOWED"), labels=c("Divorced", "Married", "Single", "Widowed"))
+
+tabyl(aldNonLT_icu$insurance)
+aldNonLT_icu$insurance <- factor(aldNonLT_icu$insurance, levels=c("Medicaid","Medicare","Other","Private"), labels=c("Medicaid","Medicare","Other","Private"))
+
+tabyl(aldNonLT_icu$admission_type) 
+aldNonLT_icu<-aldNonLT_icu|> # new categories: Urgent / Elective
+  mutate(admission_type=case_when(admission_type %in% c("DIRECT EMER.","DIRECT OBSERVATION","EU OBSERVATION", "EW EMER.", "OBSERVATION ADMIT", "URGENT")~"Urgent", admission_type %in% c("SURGICAL SAME DAY ADMISSION", "ELECTIVE")~"Elective"))|>
+  mutate(admission_type=factor(admission_type))
+
+aldNonLT_icu$EDvisit <- factor(aldNonLT_icu$EDvisit, levels = c("Yes", "No"))
+
+aldNonLT_icu$los_icu4 <- factor(aldNonLT_icu$los_icu4, levels = c("≧ 4days in ICU", "< 4days in ICU"))
+```
+
+Imputing missing data
+
+```{r}
+## ABPm imputation using NIBPm, remove NIBPm from dataset as it is no longer needed 
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(value_ABPm=ifelse(is.na(value_ABPm), aldNonLT_icu$value_NIBPm, value_ABPm))|>
+  select(-value_NIBPm)
+```
+
+```{r}
+## All continuous variables with missing data will be imputed using mean/median values (because all variables present a certain degree of skeweness) & using sapply
+skewed_vitalNlabs<-c("los", "EDlos", "value_RR", "value_SpO2", "value_WBC", "value_PLT", "value_PTT", "value_INR", "value_Cr", "value_BUN", "value_AST", "value_ALT", "value_TBil")
+normalized_vitalNlabs<-c("age", "value_HR", "value_ABPm", "value_Hgb", "value_Na_serum", "value_K_serum", "value_HCO3_serum", "value_Glucose_serum")
+aldNonLT_icu<-aldNonLT_icu|>
+  mutate(across(all_of(normalized_vitalNlabs), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) |>
+  mutate(across(all_of(skewed_vitalNlabs), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+```
+
+```{r}
+## All categorical variables with missing data will be imputed using a random forest algorithm 
+set.seed(1111)
+
+aldNonLT_icu <- aldNonLT_icu %>%
+  select(-first_careunit, -last_careunit, -admission_location, -intime, -outtime, -admittime, -dischtime) # removing character and time format variables because missForest has trouble handling these formats. I plan to add them if needed in subsequent analyses.
+aldNonLT_icu <- as.data.frame(aldNonLT_icu) # missForest doesn't work with tibbles. it needs to be a dataframe
+aldNonLT_icu.imputed <- missForest(aldNonLT_icu, verbose=TRUE)$ximp
+```
+
+3.  **Analyzing the data**
+
+We will remove deaths in the ICU, as the length of ICU stay does not reflect their recovery outcomes.
+
+```{r}
+tabyl(aldNonLT_icu.imputed$ICUdeath) # n=630 (12.9%)
+aldNonLT_icu.survive<-aldNonLT_icu.imputed|>
+  filter(ICUdeath=="No") 
+```
+
+Descriptive analyses: What does my sample look like?
+
+```{r}
+label(aldNonLT_icu.survive$gender) <- "Gender"
+label(aldNonLT_icu.survive$race) <- "Race"
+label(aldNonLT_icu.survive$language) <- "Language"
+label(aldNonLT_icu.survive$insurance) <- "Insurance"
+label(aldNonLT_icu.survive$marital_status) <- "Marital Status"
+label(aldNonLT_icu.survive$admission_type) <- "Admission Type"
+label(aldNonLT_icu.survive$EDvisit) <- "ED Visit"
+label(aldNonLT_icu.survive$age) <- "Age (years)"
+
+cat("Demographic characteristics by ICU stay duration")
+table1(~ age + gender + race + language + insurance + marital_status + admission_type + EDvisit | los_icu4, 
+       data = aldNonLT_icu.survive, rowlabelhead="Demographics") 
+#doesn't seem to be a difference based on the table (maybe a little difference in the ED visit?). Let's try visualizing
+```
+
+Visualizations
+
+```{r}
+losNgender<- ggplot(aldNonLT_icu.survive, aes(gender, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="Gender", y="ICU length of stay")
+
+losNrace<-ggplot(aldNonLT_icu.survive, aes(race, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="Race", y="ICU length of stay")
+
+losNlanguage<-ggplot(aldNonLT_icu.survive, aes(language, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="Language", y="ICU length of stay")
+
+losNinsurance<-ggplot(aldNonLT_icu.survive, aes(insurance, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="Insurance", y="ICU length of stay")
+
+losNmarital<-ggplot(aldNonLT_icu.survive, aes(marital_status, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="Marital Status", y="ICU length of stay")
+
+losNadm<-ggplot(aldNonLT_icu.survive, aes(admission_type, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="Admission type", y="ICU length of stay")
+
+losNEDvisit<-ggplot(aldNonLT_icu.survive, aes(EDvisit, los))+
+  geom_violin(fill="lightyellow", draw_quantiles = c(0.25, 0.5, 0.75))+
+  labs(x="ER admission", y="ICU length of stay")
+
+losNage<-ggplot(aldNonLT_icu.survive, aes(x=los, y=age))+
+  geom_point()+
+  labs(x="ICU length of stay", y="Age")
+
+losNEDlos<-ggplot(aldNonLT_icu.survive, aes(x=los, y=EDlos))+
+  geom_point()+
+  labs(x="ICU length of stay", y="ED length of stay")
+
+losNmBP<-ggplot(aldNonLT_icu.survive, aes(x=los, y=value_ABPm))+
+  geom_point()+
+  labs(x="ICU length of stay", y="Mean arterial BP")
+
+losNSpO2<-ggplot(aldNonLT_icu.survive, aes(x=los, y=value_SpO2))+
+  geom_point()+
+  labs(x="ICU length of stay", y="SpO2")
+
+losNast<-ggplot(aldNonLT_icu.survive, aes(x=los, y=value_AST, color=value_TBil))+
+  geom_point()+
+  labs(x="ICU length of stay", y="AST")
+
+losNalt<-ggplot(aldNonLT_icu.survive, aes(x=los, y=value_ALT, color=value_TBil))+
+  geom_point()+
+  labs(x="ICU length of stay", y="ALT")
+
+### There are no apparent relationships between each predictor variable and ICU length of stay. Hopefully, the ML model will be able to capture complex interactions and non-linear relationships that were not apparent in univariate visualizations
+```
+
+Machine learning : Logistic regression , Random Forest, and XGBoost
+
+```{r}
+set.seed(1234)
+icu.survivor_split<-initial_split(aldNonLT_icu.survive, strata=los_icu4, prop=0.8)
+
+icu.4days_train<- training(icu.survivor_split)
+icu.4days_test<- testing(icu.survivor_split)
+```
+
+```{r}
+#1. Logistic regression
+lr_class_spec<-logistic_reg()|>
+  set_engine("glm")
+
+lr_class_fit<-lr_class_spec|>
+  fit(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum, data=icu.4days_train)
+
+## top variables
+library(broom)
+significant_predictors <- tidy(lr_class_fit$fit) %>% filter(p.value < 0.05)
+print(significant_predictors)
+
+## 10-fold Cross-Validation
+set.seed(1234)
+icu.4days_folds<-vfold_cv(icu.4days_train, v=10)
+
+glm_workflow<-workflow()|>
+  add_model(lr_class_spec)|>
+  add_formula(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum)
+
+glm_fit_cv<-glm_workflow|>
+  fit_resamples(icu.4days_folds, control=control_resamples(save_pred=TRUE))
+collect_metrics(glm_fit_cv) #AUC=0.691
+
+icu.4days_glm_cv_preds<-collect_predictions(glm_fit_cv)
+icu.4days_glm_cv_preds|>
+  group_by(id)|>
+  roc_auc(los_icu4, `.pred_≧ 4days in ICU`)
+icu.4days_glm_cv_preds|>
+  group_by(id)|>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
+  autoplot()
+
+## prediction on unseen testing data
+icu.4days_lr_pred_test<-bind_cols(truth=icu.4days_test$los_icu4, predict(lr_class_fit, icu.4days_test), predict(lr_class_fit, icu.4days_test, type="prob"))
+icu.4days_lr_pred_test
+autoplot(roc_curve(icu.4days_lr_pred_test, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_lr_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) #AUC=0.688
+```
+
+```{r}
+#2. Random Forest
+rf_spec<-rand_forest(trees=500, min_n=5)|>
+  set_engine("randomForest", importance=TRUE)|>
+  set_mode("classification")
+
+rf_fit<-rf_spec|>
+  fit(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum, data=icu.4days_train)
+
+## top variables
+rf_fit|>
+  extract_fit_engine()|>
+  vip()
+rf_fit|>
+  extract_fit_engine()|>
+  importance()|>
+  as.data.frame()|>
+  arrange(desc(MeanDecreaseGini))
+
+## 10-fold Cross-Validation
+set.seed(1234)
+icu.4days_folds<-vfold_cv(icu.4days_train, v=10)
+
+rf_workflow<-workflow()|>
+  add_model(rf_spec)|>
+  add_formula(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum)
+
+rf_fit_cv<-rf_workflow|>
+  fit_resamples(icu.4days_folds, control=control_resamples(save_pred=TRUE))
+collect_metrics(rf_fit_cv) #AUC=0.723
+
+icu.4days_rf_cv_preds<-collect_predictions(rf_fit_cv)
+icu.4days_rf_cv_preds|>
+  group_by(id)|>
+  roc_auc(los_icu4, `.pred_≧ 4days in ICU`)
+icu.4days_rf_cv_preds|>
+  group_by(id)|>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
+  autoplot()
+
+## prediction on unseen testing data
+icu.4days_rf_pred_test<-bind_cols(truth=icu.4days_test$los_icu4, predict(rf_fit, icu.4days_test), predict(rf_fit, icu.4days_test, type="prob"))
+icu.4days_rf_pred_test
+autoplot(roc_curve(icu.4days_rf_pred_test, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_rf_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) #AUC=0.704 
+```
+
+```{r}
+#3. XGBoost
+bt_spec<-boost_tree(trees=500, tree_depth=4)|>
+  set_engine("xgboost")|>
+  set_mode("classification")
+
+bt_recipe<-recipe(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum, data=icu.4days_train)|>
+  step_dummy(all_nominal_predictors())|>
+  step_normalize(all_predictors())
+
+bt_workflow<-workflow()|>
+  add_model(bt_spec)|>
+  add_recipe(bt_recipe)
+
+bt_fit<-fit(bt_workflow, data=icu.4days_train)
+
+## top variables
+vip(bt_fit)
+
+## 10-fold Cross-Validation
+set.seed(1234)
+icu.4days_folds<-vfold_cv(icu.4days_train, v=10)
+
+bt_fit_cv <- bt_workflow |>
+  fit_resamples(icu.4days_folds, control = control_resamples(save_pred = TRUE))
+collect_metrics(bt_fit_cv) #AUC=0.694
+
+icu.4days_bt_cv_preds <- collect_predictions(bt_fit_cv)
+icu.4days_bt_cv_preds |>
+  group_by(id) |>
+  roc_auc(los_icu4, `.pred_≧ 4days in ICU`)
+icu.4days_bt_cv_preds |>
+  group_by(id) |>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`) |>
+  autoplot()
+
+## prediction on unseen testing data
+icu.4days_xgb_pred_test<-bind_cols(truth = icu.4days_test$los_icu4, predict(bt_fit, icu.4days_test), predict(bt_fit, icu.4days_test, type = "prob"))
+icu.4days_xgb_pred_test
+autoplot(roc_curve(icu.4days_xgb_pred_test, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_xgb_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) # AUC=0.680 
+```
+
+## Results {#sec-results}
+
+Below are my main tables and figures that were presented above in the Methods section.
+
+1.  **Demographics**
+
+```{r}
+table1(~ age + gender + race + language + insurance + marital_status + admission_type + EDvisit | los_icu4, 
+       data = aldNonLT_icu.survive, rowlabelhead="Demographics")
+```
+
+2.  **Univariate visualizations**
+
+```{r}
+library(patchwork)
+violin_categ <- (losNgender | losNmarital ) / 
+                 (losNrace | losNlanguage ) / 
+                 (losNinsurance | losNEDvisit | losNadm)
+
+print(violin_categ)
+```
+
+```{r}
+scatter_cont <- (losNage | losNEDlos ) / 
+                 (losNmBP | losNSpO2 ) / 
+                 (losNast | losNalt)
+
+print(scatter_cont)
+```
+
+3.  Machine learning I : Logistic regression
+
+```{r}
+## 10-fold Cross-Validation
+set.seed(1234)
+icu.4days_glm_cv_preds|>
+  group_by(id)|>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
+  autoplot()
+collect_metrics(glm_fit_cv) 
+
+## prediction on unseen testing data
+autoplot(roc_curve(icu.4days_lr_pred_test, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_lr_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+```
+
+4.  Machine learning II : Random Forest
+
+```{r}
+## 10-fold Cross-Validation
+set.seed(1234)
+icu.4days_rf_cv_preds|>
+  group_by(id)|>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
+  autoplot()
+collect_metrics(rf_fit_cv) 
+
+## prediction on unseen testing data
+autoplot(roc_curve(icu.4days_rf_pred_test, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_rf_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+```
+
+5.  Machine learning III : XGBoost
+
+```{r}
+## 10-fold Cross-Validation
+set.seed(1234)
+icu.4days_bt_cv_preds |>
+  group_by(id) |>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`) |>
+  autoplot()
+collect_metrics(bt_fit_cv) 
+
+## prediction on unseen testing data
+autoplot(roc_curve(icu.4days_xgb_pred_test, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_xgb_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+```
+
+## Conclusion
+
+The Random Forest model demonstrated the highest predictive accuracy for classifying whether an ALD patient's ICU stay would last 4 days or more, compared to logistic regression and XGBoost models. However, its performance was moderate, with an AUC of just over 70%. This highlights room for improvement and provides a basis for future optimization efforts.
+
+The "top" significant variables that were used in each model were extracted (presented in the Methods section) for subsequent K-means clustering to classify ALD patients into subgroups based on ICU length of stay (≧ 4days, \<4days) and ICU deaths. Each model identified different sets of top variables, some of which overlap. I would appreciate your insight on whether I should select the top variables from a specific model or include all top variables from all three models moving forward. Your feedback and suggestions are greatly appreciated! Thank you :)

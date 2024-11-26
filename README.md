@@ -6,5 +6,5 @@ Hello! This project aims to predict the ICU length of stay for patients with alc
 
 *Description of Contents*
 
-final_project_SHK.qmd -------- Markdown document 
+final_project_SHK.qmd -------- Markdown document <br />
 final_project_SHK.html -------- HTML version for readability

@@ -650,6 +650,20 @@ losNalt<-ggplot(aldNonLT_icu.survive, aes(x=los, y=value_ALT, color=value_TBil))
   geom_point()+
   labs(x="ICU length of stay", y="ALT")
 
+print(losNgender)
+print(losNrace)
+print(losNlanguage)
+print(losNinsurance)
+print(losNmarital)
+print(losNadm)
+print(losNEDvisit)
+print(losNage)
+print(losNEDlos)
+print(losNmBP)
+print(losNSpO2)
+print(losNast)
+print(losNalt)
+
 ### There are no apparent relationships between each predictor variable and ICU length of stay. Hopefully, the ML model will be able to capture complex interactions and non-linear relationships that were not apparent in univariate visualizations
 ```
 

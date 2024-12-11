@@ -14,7 +14,7 @@ Use this template to complete your project throughout the course. Your Final Pro
 
 ## Overview {#sec-overview}
 
-This project aims to predict the ICU length of stay for patients with alcohol-associated liver disease by applying and comparing several supervised machine learning algorithms: linear regression models, random forest, and extreme gradient boosting. This study will use the Medical Information for Intensive Care (MIMIC) -IV database. I met with Dr. Serper, who contributed domain expertise from her clinical experience as a gastroenterologist, and consulted Dr. Min regarding analytic and machine learning approaches. <https://github.com/kshyon/BMIN503_Final_Project_SHK>
+[This project](https://github.com/kshyon/BMIN503_Final_Project_SHK) aims to predict the ICU length of stay for patients with alcohol-associated liver disease by applying and comparing several supervised machine learning algorithms: linear regression models, random forest, and extreme gradient boosting. This study will use the Medical Information for Intensive Care (MIMIC) -IV database. I met with Dr. Serper, who contributed domain expertise from her clinical experience as a gastroenterologist, and consulted Dr. Min regarding analytic and machine learning approaches.
 
 ## Introduction {#sec-introduction}
 
@@ -685,11 +685,6 @@ lr_class_spec<-logistic_reg()|>
 lr_class_fit<-lr_class_spec|>
   fit(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum, data=icu.4days_train)
 
-## top variables
-library(broom)
-significant_predictors <- tidy(lr_class_fit$fit) %>% filter(p.value < 0.05)
-print(significant_predictors)
-
 ## 10-fold Cross-Validation
 set.seed(1234)
 icu.4days_folds<-vfold_cv(icu.4days_train, v=10)
@@ -700,7 +695,7 @@ glm_workflow<-workflow()|>
 
 glm_fit_cv<-glm_workflow|>
   fit_resamples(icu.4days_folds, control=control_resamples(save_pred=TRUE))
-collect_metrics(glm_fit_cv) #AUC=0.691
+collect_metrics(glm_fit_cv) 
 
 icu.4days_glm_cv_preds<-collect_predictions(glm_fit_cv)
 icu.4days_glm_cv_preds|>
@@ -715,7 +710,7 @@ icu.4days_glm_cv_preds|>
 icu.4days_lr_pred_test<-bind_cols(truth=icu.4days_test$los_icu4, predict(lr_class_fit, icu.4days_test), predict(lr_class_fit, icu.4days_test, type="prob"))
 icu.4days_lr_pred_test
 autoplot(roc_curve(icu.4days_lr_pred_test, truth, `.pred_≧ 4days in ICU`))
-metrics(icu.4days_lr_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) #AUC=0.688
+metrics(icu.4days_lr_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
 ```
 
 ```{r}
@@ -727,16 +722,6 @@ rf_spec<-rand_forest(trees=500, min_n=5)|>
 rf_fit<-rf_spec|>
   fit(los_icu4~age+gender+race+language+insurance+marital_status+admission_type+EDvisit+EDlos+value_RR+value_HR+value_SpO2+value_ABPm+value_Hgb+value_WBC+value_PLT+value_INR+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN+value_TBil+value_K_serum+value_HCO3_serum, data=icu.4days_train)
 
-## top variables
-rf_fit|>
-  extract_fit_engine()|>
-  vip()
-rf_fit|>
-  extract_fit_engine()|>
-  importance()|>
-  as.data.frame()|>
-  arrange(desc(MeanDecreaseGini))
-
 ## 10-fold Cross-Validation
 set.seed(1234)
 icu.4days_folds<-vfold_cv(icu.4days_train, v=10)
@@ -747,7 +732,7 @@ rf_workflow<-workflow()|>
 
 rf_fit_cv<-rf_workflow|>
   fit_resamples(icu.4days_folds, control=control_resamples(save_pred=TRUE))
-collect_metrics(rf_fit_cv) #AUC=0.723
+collect_metrics(rf_fit_cv) 
 
 icu.4days_rf_cv_preds<-collect_predictions(rf_fit_cv)
 icu.4days_rf_cv_preds|>
@@ -762,7 +747,7 @@ icu.4days_rf_cv_preds|>
 icu.4days_rf_pred_test<-bind_cols(truth=icu.4days_test$los_icu4, predict(rf_fit, icu.4days_test), predict(rf_fit, icu.4days_test, type="prob"))
 icu.4days_rf_pred_test
 autoplot(roc_curve(icu.4days_rf_pred_test, truth, `.pred_≧ 4days in ICU`))
-metrics(icu.4days_rf_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) #AUC=0.704 
+metrics(icu.4days_rf_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
 ```
 
 ```{r}
@@ -781,16 +766,13 @@ bt_workflow<-workflow()|>
 
 bt_fit<-fit(bt_workflow, data=icu.4days_train)
 
-## top variables
-vip(bt_fit)
-
 ## 10-fold Cross-Validation
 set.seed(1234)
 icu.4days_folds<-vfold_cv(icu.4days_train, v=10)
 
 bt_fit_cv <- bt_workflow |>
   fit_resamples(icu.4days_folds, control = control_resamples(save_pred = TRUE))
-collect_metrics(bt_fit_cv) #AUC=0.694
+collect_metrics(bt_fit_cv) 
 
 icu.4days_bt_cv_preds <- collect_predictions(bt_fit_cv)
 icu.4days_bt_cv_preds |>
@@ -805,14 +787,156 @@ icu.4days_bt_cv_preds |>
 icu.4days_xgb_pred_test<-bind_cols(truth = icu.4days_test$los_icu4, predict(bt_fit, icu.4days_test), predict(bt_fit, icu.4days_test, type = "prob"))
 icu.4days_xgb_pred_test
 autoplot(roc_curve(icu.4days_xgb_pred_test, truth, `.pred_≧ 4days in ICU`))
-metrics(icu.4days_xgb_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) # AUC=0.680 
+metrics(icu.4days_xgb_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+```
+
+All three approaches have relatively low AUC values, and their performance tends decline on the testing data, suggesting potential overfitting issues.
+
+Feature selection from all three models
+
+```{r}
+# top variables from logistic regression
+library(broom)
+significant_predictors <- tidy(lr_class_fit$fit) %>% filter(p.value < 0.05)
+print(significant_predictors)
+
+# top variables from random forest
+rf_fit|>
+  extract_fit_engine()|>
+  importance()|>
+  as.data.frame()|>
+  arrange(desc(MeanDecreaseGini))
+
+# top variables from XGBoost
+vip(bt_fit)
+```
+
+Top variables from the Random Forest will be selected for model optimization, since it demonstrated the best performance. The threshold drop in the Mean Decrease in Gini Coefficient is 50. 12 predictors will be included in the optimized model.
+
+```{r}
+# Elbow plot to determine drop threshold
+rf_fit |>
+  extract_fit_engine() |>
+  importance() |>
+  as.data.frame() |>
+  rownames_to_column(var = "Predictor") |>
+  arrange(desc(MeanDecreaseGini)) |>
+  ggplot(aes(x = reorder(Predictor, -MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_point(color="orange", size=3) +
+  geom_line(color="orange", group=1, linewidth=1) +
+  theme_minimal() +
+  labs(
+    title = "Elbow Plot for Feature Selection",
+    x = "Predictor variables",
+    y = "MeanDecreaseGini"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+set.seed(5678)
+icu.survivor_split_top<-initial_split(aldNonLT_icu.survive, strata=los_icu4, prop=0.8)
+
+icu.4days_train_top<- training(icu.survivor_split_top)
+icu.4days_test_top<- testing(icu.survivor_split_top)
+```
+
+```{r}
+rf_spec_top<-rand_forest(trees=500, min_n=5)|>
+  set_engine("randomForest", importance=TRUE)|>
+  set_mode("classification")
+
+rf_fit_top<-rf_spec_top|>
+  fit(los_icu4~value_HR+value_ABPm+value_Hgb+value_WBC+value_PLT+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN, data=icu.4days_train_top)
+
+## 10-fold Cross-Validation
+set.seed(5678)
+icu.4days_folds_top<-vfold_cv(icu.4days_train_top, v=10)
+
+rf_workflow_top<-workflow()|>
+  add_model(rf_spec_top)|>
+  add_formula(los_icu4~value_HR+value_ABPm+value_Hgb+value_WBC+value_PLT+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_ALT+value_Na_serum+value_BUN)
+
+rf_fit_cv_top<-rf_workflow_top|>
+  fit_resamples(icu.4days_folds_top, control=control_resamples(save_pred=TRUE))
+collect_metrics(rf_fit_cv_top) 
+
+icu.4days_rf_cv_preds_top<-collect_predictions(rf_fit_cv_top)
+icu.4days_rf_cv_preds_top|>
+  group_by(id)|>
+  roc_auc(los_icu4, `.pred_≧ 4days in ICU`)
+icu.4days_rf_cv_preds_top|>
+  group_by(id)|>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
+  autoplot()
+
+## prediction on unseen testing data
+icu.4days_rf_pred_test_top<-bind_cols(truth=icu.4days_test_top$los_icu4, predict(rf_fit_top, icu.4days_test_top), predict(rf_fit_top, icu.4days_test_top, type="prob"))
+icu.4days_rf_pred_test_top
+autoplot(roc_curve(icu.4days_rf_pred_test_top, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_rf_pred_test_top, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+```
+
+Seems to have slightly resolved the problem of overfitting. The AUC value is still suboptimal. It could be because it's missing a key predictor, but also curious to see if addressing multicolinearity can improve model's performance.
+
+```{r}
+# corplot to detect hidden patterns among variables
+## Curious regarding why the predictors are unable to predict the outcome... could be because it is missing a key predictor, but could also be due to multicolinearity
+
+library(corrplot)
+top.predictors<-aldNonLT_icu.survive[, c("value_HR","value_ABPm","value_Hgb","value_WBC","value_PLT","value_PTT","value_AST","value_Cr","value_Glucose_serum","value_ALT","value_Na_serum","value_BUN")]
+corr_matrix <- cor(top.predictors)
+corrplot(corr_matrix, method = 'shade', order = 'AOE', diag = FALSE, tl.col="darkblue")
+```
+
+```{r}
+# Would model performance improve if I remove predictors with multicolinearity? (ALT and BUN)
+set.seed(0123)
+icu.survivor_split_last<-initial_split(aldNonLT_icu.survive, strata=los_icu4, prop=0.8)
+
+icu.4days_train_last<- training(icu.survivor_split_last)
+icu.4days_test_last<- testing(icu.survivor_split_last)
+
+rf_spec_last<-rand_forest(trees=500, min_n=5)|>
+  set_engine("randomForest", importance=TRUE)|>
+  set_mode("classification")
+
+rf_fit_last<-rf_spec_last|>
+  fit(los_icu4~value_HR+value_ABPm+value_Hgb+value_WBC+value_PLT+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_Na_serum, data=icu.4days_train_last)
+
+## 10-fold Cross-Validation
+set.seed(0123)
+icu.4days_folds_last<-vfold_cv(icu.4days_train_last, v=10)
+
+rf_workflow_last<-workflow()|>
+  add_model(rf_spec_last)|>
+  add_formula(los_icu4~value_HR+value_ABPm+value_Hgb+value_WBC+value_PLT+value_PTT+value_AST+value_Cr+value_Glucose_serum+value_Na_serum)
+
+rf_fit_cv_last<-rf_workflow_last|>
+  fit_resamples(icu.4days_folds_last, control=control_resamples(save_pred=TRUE))
+collect_metrics(rf_fit_cv_last) 
+
+icu.4days_rf_cv_preds_last<-collect_predictions(rf_fit_cv_last)
+icu.4days_rf_cv_preds_last|>
+  group_by(id)|>
+  roc_auc(los_icu4, `.pred_≧ 4days in ICU`)
+icu.4days_rf_cv_preds_last|>
+  group_by(id)|>
+  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
+  autoplot()
+
+## prediction on unseen testing data
+icu.4days_rf_pred_test_last<-bind_cols(truth=icu.4days_test_last$los_icu4, predict(rf_fit_last, icu.4days_test_last), predict(rf_fit_last, icu.4days_test_last, type="prob"))
+icu.4days_rf_pred_test_last
+autoplot(roc_curve(icu.4days_rf_pred_test_last, truth, `.pred_≧ 4days in ICU`))
+metrics(icu.4days_rf_pred_test_last, truth, .pred_class, `.pred_≧ 4days in ICU`) 
 ```
 
 ## Results {#sec-results}
 
-Below are my main tables and figures that were presented above in the Methods section.
-
 1.  **Demographics**
+
+The mean age of individuals included in the analyzed data set was 55.1 (SD=12.1), who were mostly male, White, and English-speaking.
 
 ```{r}
 table1(~ age + gender + race + language + insurance + marital_status + admission_type + EDvisit | los_icu4, 
@@ -820,6 +944,8 @@ table1(~ age + gender + race + language + insurance + marital_status + admission
 ```
 
 2.  **Univariate visualizations**
+
+Neither the table nor univariate visualizations seem to show significant associations between the predictor variable and the ICU length of stay.
 
 ```{r}
 library(patchwork)
@@ -838,56 +964,54 @@ scatter_cont <- (losNage | losNEDlos ) /
 print(scatter_cont)
 ```
 
-3.  **Machine learning I : Logistic regression**
+3.  **Comparing the three machine learning approaches**
+
+The Random Forest approach had the best performance for predicting whether a patient's ICU stay would last 4 days or more in the testing data set, but its AUC value is just above 0.7, which is moderate.
 
 ```{r}
-## 10-fold Cross-Validation
-set.seed(1234)
-icu.4days_glm_cv_preds|>
-  group_by(id)|>
-  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
-  autoplot()
-collect_metrics(glm_fit_cv) 
+lr_test_roc<-roc_curve(icu.4days_lr_pred_test, truth, `.pred_≧ 4days in ICU`)|>
+  mutate(Model="Logistic Regression")
+rf_test_roc<-roc_curve(icu.4days_rf_pred_test, truth, `.pred_≧ 4days in ICU`)|>
+  mutate(Model="Random Forest")
+xg_test_roc<-roc_curve(icu.4days_xgb_pred_test, truth, `.pred_≧ 4days in ICU`)|>
+  mutate(Model="XG Boost")
 
-## prediction on unseen testing data
-autoplot(roc_curve(icu.4days_lr_pred_test, truth, `.pred_≧ 4days in ICU`))
-metrics(icu.4days_lr_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+all_roc<-bind_rows(lr_test_roc, rf_test_roc, xg_test_roc)
+
+ggplot(all_roc, aes(x = 1 - specificity, y = sensitivity, color = Model)) +
+  geom_line(size = 1) +
+  labs(title = "ROC Curve Comparison",
+       x = "1 - Specificity",
+       y = "Sensitivity") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
 ```
 
-4.  **Machine learning II : Random Forest**
+4.  **Model optimization effects**
+
+Although it didn't significantly improve the Random Forest model's predictive performance, model optimization by using top predictors seemed to reduce overfitting and improved interpretability of the model.
 
 ```{r}
-## 10-fold Cross-Validation
-set.seed(1234)
-icu.4days_rf_cv_preds|>
-  group_by(id)|>
-  roc_curve(los_icu4, `.pred_≧ 4days in ICU`)|>
-  autoplot()
-collect_metrics(rf_fit_cv) 
-
-## prediction on unseen testing data
-autoplot(roc_curve(icu.4days_rf_pred_test, truth, `.pred_≧ 4days in ICU`))
-metrics(icu.4days_rf_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
+bind_rows(
+    icu.4days_rf_cv_preds |>
+    summarise(Model = "Random Forest (All Features, CV)",
+              ROC_AUC = roc_auc_vec(truth = los_icu4, estimate = `.pred_≧ 4days in ICU`)),
+  icu.4days_rf_pred_test |>
+    summarise(Model = "Random Forest (All Features, Test)",
+              ROC_AUC = roc_auc_vec(truth = truth, estimate = `.pred_≧ 4days in ICU`)),
+  icu.4days_rf_cv_preds_top |>
+    summarise(Model = "Random Forest (Top Features, CV)",
+              ROC_AUC = roc_auc_vec(truth = los_icu4, estimate = `.pred_≧ 4days in ICU`)),
+  icu.4days_rf_pred_test_top |>
+    summarise(Model = "Random Forest (Top Features, Test)",
+              ROC_AUC = roc_auc_vec(truth = truth, estimate = `.pred_≧ 4days in ICU`)),
+)
 ```
 
-5.  **Machine learning III : XGBoost**
+5.  **Future steps: transforming predictor variables based on corrplot results and peer feedback**
 
-```{r}
-## 10-fold Cross-Validation
-set.seed(1234)
-icu.4days_bt_cv_preds |>
-  group_by(id) |>
-  roc_curve(los_icu4, `.pred_≧ 4days in ICU`) |>
-  autoplot()
-collect_metrics(bt_fit_cv) 
-
-## prediction on unseen testing data
-autoplot(roc_curve(icu.4days_xgb_pred_test, truth, `.pred_≧ 4days in ICU`))
-metrics(icu.4days_xgb_pred_test, truth, .pred_class, `.pred_≧ 4days in ICU`) 
-```
+To further enhance the model's interpretation, I will consider transforming the highly correlated predictor variables (BUN and ALT) into a BUN/Cr ratio and AST/ALT ratio, and perhaps calculate the MELD score (Model for End-Stage Liver Disease score; based on INR, Cr, Bilirubin, Na levels) to include as a predictor instead of using individual lab values. Capping vital signs and lab values may not accurately reflect the acute condition of ALD patients, so I plan to meet with my advisors to discuss more regarding the management of extreme outliers. I also aim to incorporate comorbidities and medication histories to improve model performance.
 
 ## Conclusion
 
-The Random Forest model demonstrated the highest predictive accuracy for classifying whether an ALD patient's ICU stay would last 4 days or more, compared to logistic regression and XGBoost models. However, its performance was moderate, with an AUC of just over 70%. This highlights room for improvement and provides a basis for future optimization efforts.
-
-The "top" significant variables that were used in each model were extracted (presented in the Methods section) for subsequent K-means clustering to classify ALD patients into subgroups based on ICU length of stay (≧ 4days, \<4days) and ICU deaths. Each model identified different sets of top variables, some of which overlap. I would appreciate your insight on whether I should select the top variables from a specific model or include all top variables from all three models moving forward. Your feedback and suggestions are greatly appreciated! Thank you :)
+The Random Forest model demonstrated the highest predictive accuracy for classifying whether an ALD patient's ICU stay would last 4 days or more, compared to logistic regression and XGBoost models. However, its performance was moderate, with an AUC of just over 70%. This highlights room for improvement and provides a basis for future optimization efforts. After a satisfactory AUC value is obtained for the model, it would still require caution and external validation before its implementaton in practice, especially given the demographic homogeneity of the patients that were used to train and test this model. Once the final model is validated, it will support proactive planning for patient care, caregiver schedules, and resource allocation by indicating the patient's projected recovery or decline.
